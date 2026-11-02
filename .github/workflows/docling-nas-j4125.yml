@@ -2,6 +2,11 @@ name: Docling J4125 NAS image
 
 on:
   workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - crates/docling-serve/Dockerfile.nas
+      - .github/workflows/docling-nas-j4125.yml
 
 permissions:
   contents: read
