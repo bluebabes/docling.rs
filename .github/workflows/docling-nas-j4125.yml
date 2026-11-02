@@ -102,7 +102,8 @@ jobs:
           fi
           curl --noproxy '*' -fsS http://127.0.0.1:15001/health
           curl --noproxy '*' -fsS http://127.0.0.1:15001/ | grep -q '当前任务'
-          curl --noproxy '*' -fsS http://127.0.0.1:15001/v1/jobs | grep -q '"jobs"'
+          test "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
+            -X POST http://127.0.0.1:15001/v1/jobs/unknown-task/cancel)" = "404"
           curl --noproxy '*' -fsS --max-time 420 \
             -F 'file=@tests/data/pdf/sources/base14_fonts.pdf' \
             http://127.0.0.1:15001/v1/convert -o "$response_file"
