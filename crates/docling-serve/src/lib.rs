@@ -627,7 +627,6 @@ pub fn router(cfg: ServeConfig) -> Router {
         .route("/v1/convert", post(convert))
         .route("/v1/convert/async", post(convert_async))
         .route("/v1/status/{id}", get(job_status))
-        .route("/v1/jobs", get(list_jobs))
         .route("/v1/jobs/{id}/cancel", post(cancel_job))
         .route("/v1/result/{id}", get(job_result))
         // #615: upstream docling-serve's API — what Open WebUI, n8n, Dify
@@ -1656,36 +1655,6 @@ async fn job_status(
             Json(body).into_response()
         }
     }
-}
-
-/// List server-side asynchronous jobs, including those submitted by other
-/// browser tabs. Finished entries follow the regular result TTL.
-async fn list_jobs(State(state): State<Arc<AppState>>) -> Response {
-    let mut jobs = state.jobs.lock().unwrap();
-    purge_expired(&mut jobs, state.cfg.result_ttl_secs);
-    let mut entries: Vec<_> = jobs
-        .iter()
-        .map(|(id, job)| {
-            let progress = job.progress.lock().unwrap_or_else(|p| p.into_inner());
-            (
-                job.created_at,
-                json!({
-                    "task_id": id,
-                    "task_status": job.state.as_str(),
-                    "names": &job.names,
-                    "format": &job.format,
-                    "progress": &*progress,
-                    "error": match &job.state {
-                        JobState::Failure(_, msg, _) => Some(msg.as_str()),
-                        _ => None,
-                    },
-                }),
-            )
-        })
-        .collect();
-    entries.sort_by(|a, b| b.0.cmp(&a.0));
-    Json(json!({ "jobs": entries.into_iter().map(|(_, value)| value).collect::<Vec<_>>() }))
-        .into_response()
 }
 
 /// Request a cooperative stop. A queued job is removed from the queue
