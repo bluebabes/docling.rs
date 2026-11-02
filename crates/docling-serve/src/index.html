@@ -106,40 +106,40 @@
     </label>
     <label><input type="checkbox" id="strict"> 严格 Markdown</label>
     <label><input type="checkbox" id="embed" checked> 嵌入图片</label>
-    <label id="fetch-images-label" title="HTML/EPUB/MHTML/JATS: resolve external <img src> and embed the bytes (outbound fetch)"><input type="checkbox" id="fetch_images"> 获取外链图片</label>
-    <label title="Keep layout + TableFormer, never OCR (docling's --no-ocr, do_ocr=False): structure survives, pixel-only text comes back empty"><input type="checkbox" id="no_ocr"> 关闭 OCR</label>
-    <label title="No models at all: the embedded text layer as flat paragraphs (what no_ocr meant before 2.0)"><input type="checkbox" id="text_layer_only"> 仅提取文字层</label>
+    <label id="fetch-images-label" title="允许获取 HTML 等文档中的外部图片（需要服务端开放 URL 抓取）"><input type="checkbox" id="fetch_images"> 获取外链图片</label>
+    <label title="保留版面分析与表格识别，跳过 OCR；扫描件可能无法提取文字"><input type="checkbox" id="no_ocr"> 关闭 OCR</label>
+    <label title="只提取 PDF 内嵌文字层，不运行版面分析、OCR 和表格模型"><input type="checkbox" id="text_layer_only"> 仅提取文字层</label>
     <label><input type="checkbox" id="no_table_former"> 关闭表格识别</label>
-    <label title="Keep every detected picture as a picture (disable text-panel demotion)"><input type="checkbox" id="no_text_panels"> 保留图片</label>
-    <label title="OCR every page from its render, ignoring the embedded text layer (docling's force_full_page_ocr)"><input type="checkbox" id="force_full_page_ocr"> 整页 OCR</label>
-    <label title="Infer section-header levels from font size / numbering (docling's HeadingHierarchyModel, #302)"><input type="checkbox" id="heading_hierarchy"> 推断标题层级</label>
-    <label title="RapidOCR's text-line orientation: oriented line crops, tall lines turned 90°, upside-down lines turned by the 0/180 classifier (#666)"><input type="checkbox" id="ocr_textline_orientation"> OCR 文字方向识别</label>
-    <label title="Classify pictures with DocumentFigureClassifier — 26 classes on the JSON picture item (docling's do_picture_classification, #423)"><input type="checkbox" id="do_picture_classification"> 图片分类</label>
-    <label title="Rewrite code blocks and detect their language with the CodeFormulaV2 VLM (docling's do_code_enrichment, #423) — slow on CPU"><input type="checkbox" id="do_code_enrichment"> 增强代码识别</label>
-    <label title="Decode display formulas to LaTeX with CodeFormulaV2 (docling's do_formula_enrichment, #423) — slow on CPU"><input type="checkbox" id="do_formula_enrichment"> 增强公式识别</label>
-    <label title="Unpadded | a | b | Markdown tables (#271)"><input type="checkbox" id="compact_tables"> 紧凑表格</label>
-    <label title="Text inserted between pages in Markdown output (docling's page_break_placeholder; empty = no page breaks)">分页标记 <input type="text" id="md_page_break_placeholder" size="18" placeholder="&lt;!-- page break --&gt;"></label>
-    <label title="Omit empty cells from sparse XLSX/XLS grids (#271)"><input type="checkbox" id="skip_empty_cells"> 跳过空单元格</label>
+    <label title="保留文档中检测到的全部图片区域"><input type="checkbox" id="no_text_panels"> 保留图片</label>
+    <label title="强制对整页渲染图执行 OCR，即使 PDF 包含文字层"><input type="checkbox" id="force_full_page_ocr"> 整页 OCR</label>
+    <label title="根据字号和编号推断标题层级"><input type="checkbox" id="heading_hierarchy"> 推断标题层级</label>
+    <label title="处理旋转、竖排或倒置的 OCR 文字行"><input type="checkbox" id="ocr_textline_orientation"> OCR 文字方向识别</label>
+    <label title="对图片进行分类，结果写入 JSON"><input type="checkbox" id="do_picture_classification"> 图片分类</label>
+    <label title="使用模型增强代码块及语言识别；CPU 上可能较慢"><input type="checkbox" id="do_code_enrichment"> 增强代码识别</label>
+    <label title="将公式识别并输出为 LaTeX；CPU 上可能较慢"><input type="checkbox" id="do_formula_enrichment"> 增强公式识别</label>
+    <label title="输出紧凑的 Markdown 表格"><input type="checkbox" id="compact_tables"> 紧凑表格</label>
+    <label title="在 Markdown 的页面之间插入指定文字，留空则不插入">分页标记 <input type="text" id="md_page_break_placeholder" size="18" placeholder="&lt;!-- page break --&gt;"></label>
+    <label title="处理表格时跳过空单元格"><input type="checkbox" id="skip_empty_cells"> 跳过空单元格</label>
   </div>
   <div class="row">
-    <label title="PDF page window, 1-based inclusive: 3 or 2-5">页码 <input type="text" id="pages" size="6" placeholder="all"></label>
-    <label title="Which OCR engine reads scanned pages (#460): the built-in PP-OCR recognizer, or the server's tesseract binary">OCR 引擎
+    <label title="选择 PDF 页码范围，从 1 开始，例如 3 或 2-5">页码 <input type="text" id="pages" size="6" placeholder="all"></label>
+    <label title="使用 PP-OCR 或 Tesseract 识别扫描件文字">OCR 引擎
       <select id="ocr_engine"><option value="">服务器默认</option><option value="ppocr">ppocr</option><option value="tesseract">tesseract</option></select>
     </label>
-    <label title="OCR recognition language (#889). PP-OCR: en | ch or a BCP-47 tag for either. Tesseract: tessdata stems joined by + (rus+eng, deu+fra) or BCP-47 tags (ru, de). Empty = the server's DOCLING_RS_OCR_LANG">OCR 语言
+    <label title="PP-OCR 可填 en 或 ch；Tesseract 可填 chi_sim+eng 等已安装语言">OCR 语言
       <input type="text" id="ocr_lang" list="ocr_lang_hints" size="9" placeholder="server default">
       <datalist id="ocr_lang_hints"><option value="en"><option value="ch"></datalist>
     </label>
-    <label title="Which regions feed the OCR (docling's OcrMode, #254); full_page / layout_regions discard the text layer">OCR 模式
+    <label title="选择整页、版面区域或 PDF 感知区域进行 OCR">OCR 模式
       <select id="ocr_mode"><option value="">默认</option><option value="full_page">full_page</option><option value="layout_regions">layout_regions</option><option value="pdf_aware_layout_regions">pdf_aware_layout_regions</option></select>
     </label>
-    <label title="OCR render scale in px per PDF point (docling's default 3 = 216 dpi; empty = the pipeline's 2.0 render)">OCR 缩放 <input type="number" id="ocr_scale" step="0.5" min="0.5" max="6" size="4" placeholder="2.0"></label>
-    <label title="Whisper transcription language for audio/video (empty = auto)">语音语言 <input type="text" id="asr_lang" size="4" placeholder="auto"></label>
-    <label title="Max sampled video frames (0 = transcript only)">视频帧数 <input type="number" id="video_frames" min="0" size="3" placeholder="default"></label>
-    <label title="XBRL: server-local directory holding the instance's taxonomy (schema, linkbases, taxonomy packages)">XBRL 分类目录 <input type="text" id="xbrl_taxonomy" size="12" placeholder="relative dir"></label>
+    <label title="OCR 渲染缩放比例，留空使用处理管线默认值">OCR 缩放 <input type="number" id="ocr_scale" step="0.5" min="0.5" max="6" size="4" placeholder="2.0"></label>
+    <label title="音视频转录语言，留空自动识别">语音语言 <input type="text" id="asr_lang" size="4" placeholder="auto"></label>
+    <label title="抽取视频的最大帧数，0 表示仅提取字幕">视频帧数 <input type="number" id="video_frames" min="0" size="3" placeholder="default"></label>
+    <label title="服务器上的 XBRL 分类目录">XBRL 分类目录 <input type="text" id="xbrl_taxonomy" size="12" placeholder="relative dir"></label>
   </div>
   <div class="row">
-    <label title="PDF pipeline: the standard layout/TableFormer/OCR pipeline, or a remote vision-language model (docling's VlmPipeline over an OpenAI-compatible endpoint, #304)">处理管线
+    <label title="使用标准 OCR 处理流程或远程视觉语言模型">处理管线
       <select id="pipeline"><option value="">标准处理</option><option value="vlm">VLM（远程模型）</option></select>
     </label>
     <span id="vlm_fields" style="display:none">
