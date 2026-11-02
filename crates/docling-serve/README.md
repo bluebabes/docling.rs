@@ -37,6 +37,92 @@ the OpenAPI 3.1 description, `GET /health` and `GET /ready` the container
 probes, `GET /metrics` Prometheus text. SIGTERM drains in-flight requests
 before exit.
 
+## NAS 网页异步转换、任务管理与输出保存
+
+本仓库为 Intel J4125 等 **x86-64 / 无 AVX 的 NAS** 提供专用镜像：
+
+```text
+ghcr.io/bluebabes/docling-rs-serve:nas-j4125
+```
+
+该镜像从源码构建，使用 `x86-64-v2` CPU 目标和动态 ONNX Runtime，
+包含 PDF 版面识别、表格识别及中文 OCR 所需模型、Tesseract 中文语言包。
+自动构建配置见 [`docling-nas-j4125.yml`](../../.github/workflows/docling-nas-j4125.yml)，
+Dockerfile 见 [`Dockerfile.nas`](./Dockerfile.nas)。
+
+### NAS 安装和输出目录映射
+
+```bash
+mkdir -p /share/Docling/output
+docker pull ghcr.io/bluebabes/docling-rs-serve:nas-j4125
+docker run -d --name docling-rs --restart unless-stopped \
+  --memory 6g -p 5001:5001 \
+  -v /share/Docling/output:/output \
+  ghcr.io/bluebabes/docling-rs-serve:nas-j4125
+```
+
+`/share/Docling/output` 为示例 NAS 宿主目录，请按设备实际路径修改。
+Portainer 也可以通过 Bind mount 映射同样的读写目录。
+`DOCLING_RS_OUTPUT_DIR=/output` 是该镜像的默认保存位置；
+使用其他路径时可通过环境变量覆盖。更新镜像后需重新创建容器，
+现有端口映射、内存限制和数据卷应保留。
+
+访问 `http://NAS-IP:5001/` 可使用中文转换表单。提交后网页调用
+`POST /v1/convert/async`，短请求返回任务 ID，服务器继续处理，
+网页轮询 `GET /v1/status/{id}`，展示排队、处理进度、完成或失败状态。
+转换完成后可直接在网页查看或下载结果。
+
+页面下方的**当前浏览器的任务**支持逐页进度和手动**停止**。
+任务 ID、文件名和输出格式保存在提交任务的浏览器 `localStorage`，
+刷新页面可继续查询未过期的任务；其他设备或浏览器不会自动显示这些任务。
+最多保留最近 25 条浏览器记录，服务器已经过期的任务会从列表中清除。
+出于文件隐私考虑，服务器不开放包含所有用户任务 ID 的列表接口。
+
+取消使用 `POST /v1/jobs/{id}/cancel`：
+
+- `pending`：立即标记为已停止，后续不会进入转换线程。
+- `started`：先进入 `cancelling` 状态，PDF 处理线程在当前页执行结束后检查取消信号；停止可能有延迟，已经开始的 OCR 推理会结束。
+- `cancelled`：不会返回可下载的转换结果，也不会将取消的结果保存为 Markdown。
+
+同步接口 `POST /v1/convert` 继续保留给 curl 和原有客户端；
+网页改用异步接口来规避长时间保持 HTTP 连接而导致的反向代理超时。
+
+### 自动保存 Markdown
+
+选择 Markdown（`to=md`）并成功转换**单个文档**后，
+服务将 Markdown 写进 `/output/<原文件名>.md`，由 Docker bind mount
+映射至 NAS 的 `/share/Docling/output/`。同名文件自动生成
+`-2.md`、`-3.md`，保留之前的结果。文件名会清除路径和不安全字符。
+
+转换失败、被取消或仅部分完成时不会当作成功结果自动落盘。
+目前批量转换的自动落盘尚未覆盖每个单独文件；
+网页仍可以查看和下载完整的批量响应。保存目录不可写等问题
+不会改变转换接口的返回值，请查看容器日志：
+
+```bash
+ls -lh /share/Docling/output
+docker logs docling-rs 2>&1 | grep 'Markdown'
+```
+
+### 异步 API 示例及限制
+
+```bash
+curl -F 'file=@example.pdf' http://NAS-IP:5001/v1/convert/async
+# 将以下 TASK_ID 替换为上一步响应中的 task_id
+curl http://NAS-IP:5001/v1/status/TASK_ID
+curl http://NAS-IP:5001/v1/result/TASK_ID -o result.md
+curl -X POST http://NAS-IP:5001/v1/jobs/TASK_ID/cancel
+```
+
+异步任务保存在服务进程内存中。关掉网页或客户端连接中断后，
+已经提交的异步任务可继续运行；**容器重启会丢失未完成的任务和内存中的结果**。
+完成任务的结果默认缓存 `--result-ttl 600` 秒（约 10 分钟），
+已写到 NAS 的 Markdown 文件会继续留在输出目录中。
+
+经公网访问时，建议配置 HTTPS、反向代理身份验证并妥善保护
+任务 ID。知道有效任务 ID 的客户端可能访问转换结果或提出取消请求。
+`-p 5001:5001` 会绑定宿主机网络接口，可根据需要改为内网 IP 绑定。
+
 ## Async jobs, batches and confidence
 
 Long conversions don't have to hold the connection: `POST /v1/convert/async`
