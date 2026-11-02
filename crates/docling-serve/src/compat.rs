@@ -719,8 +719,8 @@ fn submit(
     if let Some(msg) = state.overloaded() {
         return Err(ApiError::Overloaded(msg));
     }
-    let documents_total = items.len();
-    let id = submit_job(state, documents_total, move |st, _rt| {
+    let names = items.iter().map(|(name, _)| name.clone()).collect();
+    let id = submit_job(state, names, None, move |st, _rt| {
         Ok(run(st, items, &opts, &ask))
     })?;
     Ok(Json(task_status(&id, "pending")).into_response())
