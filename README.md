@@ -447,6 +447,8 @@ curl -F file=@a.pdf -F file=@b.docx localhost:5001/v1/convert    # a batch
 Request options, server flags, async jobs, the docling-serve routes and the
 Open WebUI setup: [`crates/docling-serve/README.md`](./crates/docling-serve/README.md);
 containers and sizing: [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
+本仓库的 J4125 NAS 专用镜像、网页任务管理和 Markdown 自动保存说明见
+[NAS 部署](#nas-部署intel-j4125--无-avx-的-x86-64-设备)。
 
 ## MCP server — `docling-rs mcp`
 
@@ -514,6 +516,82 @@ Details and the demo page: [`crates/docling-wasm`](./crates/docling-wasm/README.
 
 Compose files (standalone, Caddy TLS, CUDA), environment variables, sizing
 and observability: [`docs/DEPLOYMENT.md`](./docs/DEPLOYMENT.md).
+
+## NAS 部署：Intel J4125 / 无 AVX 的 x86-64 设备
+
+本仓库的 NAS 专用镜像面向 Intel Celeron J4125 等不支持 AVX/AVX2
+的 x86-64 处理器。镜像从源码编译 `docling-serve`，使用
+`x86-64-v2` CPU 基线、动态 ONNX Runtime（CPU 推理），预装版面分析、
+表格识别、OCR 模型及 Tesseract 的中英文语言包。
+
+- **镜像**：`ghcr.io/bluebabes/docling-rs-serve:nas-j4125`
+- **Dockerfile**：[`crates/docling-serve/Dockerfile.nas`](./crates/docling-serve/Dockerfile.nas)
+- **自动构建**：[`Docling J4125 NAS image`](./.github/workflows/docling-nas-j4125.yml)
+- **详细说明**：[`NAS 网页异步转换、任务管理与输出保存`](./crates/docling-serve/README.md#nas-网页异步转换任务管理与输出保存)
+
+### 启动与 NAS 持久化目录
+
+先在 NAS 上创建一个可写的输出目录，然后启动容器：
+
+```bash
+mkdir -p /share/Docling/output
+docker pull ghcr.io/bluebabes/docling-rs-serve:nas-j4125
+
+docker run -d --name docling-rs --restart unless-stopped \
+  --memory 6g \
+  -p 5001:5001 \
+  -v /share/Docling/output:/output \
+  ghcr.io/bluebabes/docling-rs-serve:nas-j4125
+```
+
+如果使用 Portainer，在 **Volumes / Bind mounts** 添加相同的读写映射：
+宿主机 `/share/Docling/output` → 容器 `/output`。
+已部署的容器需要重新创建后才会使用新镜像与新挂载。
+请根据自己的 NAS 实际目录调整 `/share/Docling/output`。
+
+访问 `http://NAS-IP:5001/` 可使用已汉化的文档转换表单。
+网页版通过异步任务接口提交文件，任务列表会显示状态与逐页进度，
+并提供停止、查看和下载操作。任务 ID 与文件名记录在当前浏览器的
+`localStorage` 中；刷新同一浏览器页面后仍可查询未过期任务。
+
+选择 **Markdown** 并完成单文件转换后，NAS 专用镜像会将结果写入
+`/share/Docling/output/<原文件名>.md`。同名文件依次生成
+`-2.md`、`-3.md`，避免覆盖已有结果。
+默认保存目录来自 `DOCLING_RS_OUTPUT_DIR=/output`，可通过环境变量修改。
+保存成功或失败均会写入容器日志：
+
+```bash
+ls -lh /share/Docling/output
+docker logs docling-rs 2>&1 | grep 'Markdown'
+```
+
+### 异步 API 与手动停止
+
+```bash
+# 上传后立即获得 task_id；长时间的 OCR 在容器中继续运行
+curl -F 'file=@example.pdf' http://NAS-IP:5001/v1/convert/async
+
+# 用实际返回的 task_id 代替 TASK_ID
+curl http://NAS-IP:5001/v1/status/TASK_ID
+curl http://NAS-IP:5001/v1/result/TASK_ID -o result.md
+
+# 主动取消排队中或处理中的任务
+curl -X POST http://NAS-IP:5001/v1/jobs/TASK_ID/cancel
+```
+
+取消采取**协作式停止**：排队任务立即取消；已开始的 PDF
+在当前页处理结束后检查取消信号，CPU 使用率可能暂时仍较高。
+已成功、失败或取消的任务状态按服务器结果保留期限清理，默认
+`--result-ttl 600`（10 分钟）。后台队列驻留内存，**容器重启会丢失任务**；
+关闭浏览器或断开反向代理连接后，已提交的异步任务仍可在运行中的
+容器内继续处理。已落盘的 Markdown 不受任务结果过期影响。
+批量异步转换目前不会逐文件自动写入 NAS 输出目录。
+
+**安全提示**：通过公网域名访问时，建议使用 HTTPS 与反向代理身份验证。
+服务器对外提供的任务 ID 可用于读取结果或取消任务，务必保护这些 ID；
+网页仅展示当前浏览器提交的任务，不提供全局任务列表。
+默认端口映射 `-p 5001:5001` 会监听宿主机的网络接口，
+需要时改为绑定内网地址，并通过反向代理访问。
 
 ## Getting the ML models
 
