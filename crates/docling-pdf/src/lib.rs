@@ -264,9 +264,18 @@ pub struct Converted {
     pub completion: Completion,
 }
 
-/// Has the document budget run out?
-fn expired(deadline: Option<std::time::Instant>) -> bool {
-    deadline.is_some_and(|d| std::time::Instant::now() >= d)
+/// The document deadline and an optional cancellation flag. Both are checked
+/// between pages; a currently executing inference finishes before cancellation.
+#[derive(Clone, Copy)]
+struct Deadline<'a> {
+    at: Option<std::time::Instant>,
+    cancelled: Option<&'a std::sync::atomic::AtomicBool>,
+}
+
+/// Has the document budget run out or has the operator cancelled the job?
+fn expired(deadline: Deadline<'_>) -> bool {
+    deadline.cancelled.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+        || deadline.at.is_some_and(|d| std::time::Instant::now() >= d)
 }
 
 /// The sentinel the page walks stop on once the budget is gone.
@@ -1623,7 +1632,7 @@ impl Worker {
         &mut self,
         work_rx: &Mutex<Receiver<(usize, PdfPage)>>,
         layout_batch: usize,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
         mut deliver: impl FnMut(usize, Result<PageOut, PdfError>) -> bool,
     ) {
         use std::sync::mpsc::TryRecvError;
@@ -2690,6 +2699,8 @@ pub struct Pipeline {
     /// Per-document wall-clock budget (docling's `document_timeout`, #497).
     /// See [`Pipeline::document_timeout`].
     document_timeout: Option<std::time::Duration>,
+    /// A per-request cancellation signal, checked between PDF pages.
+    cancel_flag: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 #[cfg(feature = "ml")]
@@ -2728,6 +2739,7 @@ impl Pipeline {
             heading_hierarchy: HeadingHierarchyOptions::default(),
             progress: None,
             document_timeout: None,
+            cancel_flag: None,
         })
     }
 
@@ -2753,6 +2765,12 @@ impl Pipeline {
     /// a previous one's budget.
     pub fn set_document_timeout(&mut self, timeout: Option<std::time::Duration>) {
         self.document_timeout = timeout;
+    }
+
+    /// Cancel a conversion cooperatively. The flag is reset for every request
+    /// by the server, so queued and subsequent documents do not inherit it.
+    pub fn set_cancel_flag(&mut self, flag: Option<Arc<std::sync::atomic::AtomicBool>>) {
+        self.cancel_flag = flag;
     }
 
     /// The deadline of a conversion starting now, from the configured budget.
@@ -3386,7 +3404,11 @@ impl Pipeline {
         password: Option<&str>,
         name: &str,
     ) -> Result<Converted, PdfError> {
-        let deadline = self.deadline();
+        let cancellation = self.cancel_flag.clone();
+        let deadline = Deadline {
+            at: self.deadline(),
+            cancelled: cancellation.as_deref(),
+        };
         let pages = pdfium_backend::page_count(bytes, password)?;
         let range = self.resolve_range(pages)?;
         // Serial vs parallel is decided by the pages actually converted: a
@@ -3442,7 +3464,7 @@ impl Pipeline {
         name: &str,
         range: Option<(usize, usize)>,
         selected: usize,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
     ) -> Result<(DoclingDocument, usize, bool), PdfError> {
         let mut doc = DoclingDocument::new(name);
         let mut confs = std::collections::BTreeMap::new();
@@ -3493,7 +3515,7 @@ impl Pipeline {
         name: &str,
         range: Option<(usize, usize)>,
         selected: usize,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
     ) -> Result<(DoclingDocument, usize, bool), PdfError> {
         let mut doc = DoclingDocument::new(name);
         let mut confs = std::collections::BTreeMap::new();
@@ -3561,7 +3583,7 @@ impl Pipeline {
         bitmap: pdfium_backend::BitmapRender,
         extract_text: bool,
         range: Option<(usize, usize)>,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
         text: pdfium_backend::TextOptions,
         mut consume: F,
     ) -> Result<bool, PdfError>
@@ -3629,7 +3651,7 @@ impl Pipeline {
         name: &str,
         range: Option<(usize, usize)>,
         selected: usize,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
     ) -> Result<(DoclingDocument, usize, bool), PdfError> {
         let text = self.text_options();
         self.ensure_pool_for(selected)?;
@@ -3799,7 +3821,11 @@ impl Pipeline {
         F: FnMut(Vec<Node>, Vec<(String, String)>) -> Result<(), PdfError>,
     {
         let _ = name; // page nodes carry no name; the caller owns the document name.
-        let deadline = self.deadline();
+        let cancellation = self.cancel_flag.clone();
+        let deadline = Deadline {
+            at: self.deadline(),
+            cancelled: cancellation.as_deref(),
+        };
         let pages = pdfium_backend::page_count(bytes, password)?;
         let range = self.resolve_range(pages)?;
         let selected = range.map_or(pages, |(a, b)| b - a + 1);
@@ -3824,7 +3850,7 @@ impl Pipeline {
         bytes: &[u8],
         password: Option<&str>,
         range: Option<(usize, usize)>,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
         selected: usize,
         mut emit: F,
     ) -> Result<(usize, bool), PdfError>
@@ -3868,7 +3894,7 @@ impl Pipeline {
         bytes: &[u8],
         password: Option<&str>,
         range: Option<(usize, usize)>,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
         selected: usize,
         mut emit: F,
     ) -> Result<(usize, bool), PdfError>
@@ -3923,7 +3949,7 @@ impl Pipeline {
         bytes: &[u8],
         password: Option<&str>,
         range: Option<(usize, usize)>,
-        deadline: Option<std::time::Instant>,
+        deadline: Deadline<'_>,
         selected: usize,
         mut emit: F,
     ) -> Result<(usize, bool), PdfError>
