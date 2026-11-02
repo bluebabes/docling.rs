@@ -229,6 +229,7 @@
 //! proxy before exposing it.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -626,6 +627,8 @@ pub fn router(cfg: ServeConfig) -> Router {
         .route("/v1/convert", post(convert))
         .route("/v1/convert/async", post(convert_async))
         .route("/v1/status/{id}", get(job_status))
+        .route("/v1/jobs", get(list_jobs))
+        .route("/v1/jobs/{id}/cancel", post(cancel_job))
         .route("/v1/result/{id}", get(job_result))
         // #615: upstream docling-serve's API — what Open WebUI, n8n, Dify
         // and LangChain's docling-serve client call (`compat.rs`).
@@ -1301,6 +1304,12 @@ fn validate_target(to: &str, target: Option<&ResolvedTarget>) -> Result<(), ApiE
 /// One async conversion job (#182).
 struct Job {
     state: JobState,
+    /// Source names for the job management page.
+    names: Vec<String>,
+    /// Signal the conversion worker to stop at the next PDF page boundary.
+    cancel: Arc<AtomicBool>,
+    /// When the job entered the queue.
+    created_at: Instant,
     /// When the job left the queue (finished or failed) — drives TTL eviction.
     done_at: Option<std::time::Instant>,
     /// The job's conversion progress (#783), written by the converting
@@ -1380,12 +1389,11 @@ impl JobProgress {
 }
 
 thread_local! {
-    /// The progress slot of the async job running on this blocking thread
-    /// (#783), set by `submit_job` around the job's work: the conversion
-    /// functions are shared with the sync endpoints, where there is no
-    /// job, so the job reaches them through the thread rather than every
-    /// signature between.
+    /// The job state on this blocking worker, never shared across unrelated
+    /// requests reusing the same Tokio thread.
     static JOB_PROGRESS: std::cell::RefCell<Option<Arc<Mutex<JobProgress>>>> =
+        const { std::cell::RefCell::new(None) };
+    static JOB_CANCELLATION: std::cell::RefCell<Option<Arc<AtomicBool>>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -1395,8 +1403,9 @@ thread_local! {
 struct JobProgressScope;
 
 impl JobProgressScope {
-    fn enter(progress: Arc<Mutex<JobProgress>>) -> Self {
+    fn enter(progress: Arc<Mutex<JobProgress>>, cancel: Arc<AtomicBool>) -> Self {
         JOB_PROGRESS.with(|s| *s.borrow_mut() = Some(progress));
+        JOB_CANCELLATION.with(|s| *s.borrow_mut() = Some(cancel));
         Self
     }
 }
@@ -1404,11 +1413,20 @@ impl JobProgressScope {
 impl Drop for JobProgressScope {
     fn drop(&mut self) {
         JOB_PROGRESS.with(|s| *s.borrow_mut() = None);
+        JOB_CANCELLATION.with(|s| *s.borrow_mut() = None);
     }
 }
 
 /// This thread's job progress slot as a progress callback, `None` on a
 /// sync request.
+fn job_cancel_token() -> Option<Arc<AtomicBool>> {
+    JOB_CANCELLATION.with(|s| s.borrow().clone())
+}
+
+fn job_cancel_requested() -> bool {
+    job_cancel_token().is_some_and(|flag| flag.load(Ordering::Relaxed))
+}
+
 fn job_progress_callback() -> Option<docling::ProgressCallback> {
     let slot = JOB_PROGRESS.with(|s| s.borrow().clone())?;
     Some(Arc::new(move |event: &docling::ProgressEvent| {
@@ -1420,6 +1438,8 @@ enum JobState {
     /// Waiting for a conversion slot (the shared semaphore).
     Pending,
     Started,
+    Cancelling,
+    Cancelled,
     Success(StoredResponse),
     /// The HTTP status the sync endpoint would have answered with, the
     /// error message, and its `code` when it has one (#636).
@@ -1431,6 +1451,8 @@ impl JobState {
         match self {
             Self::Pending => "pending",
             Self::Started => "started",
+            Self::Cancelling => "cancelling",
+            Self::Cancelled => "cancelled",
             Self::Success(_) => "success",
             Self::Failure(..) => "failure",
         }
@@ -1491,8 +1513,14 @@ async fn convert_async(
         return Err(e);
     }
 
-    let documents_total = sources.len();
-    let id = submit_job(&state, documents_total, move |st, rt| {
+    let names = sources
+        .iter()
+        .map(|source| match source {
+            Ok(doc) => doc.name.clone(),
+            Err((name, _)) => name.clone(),
+        })
+        .collect();
+    let id = submit_job(&state, names, move |st, rt| {
         run_conversion(st, sources, &options, &to, image_mode, target.as_ref(), rt)
     })?;
 
@@ -1509,13 +1537,14 @@ async fn convert_async(
 /// for `/v1/result/{id}` until the TTL evicts it. Refused with 429 when the
 /// job map is full. Shared by `/v1/convert/async` and the upstream-shaped
 /// async routes (#615).
-fn submit_job<F>(state: &Arc<AppState>, documents_total: usize, work: F) -> Result<String, ApiError>
+fn submit_job<F>(state: &Arc<AppState>, names: Vec<String>, work: F) -> Result<String, ApiError>
 where
     F: FnOnce(&AppState, &tokio::runtime::Handle) -> Result<StoredResponse, ApiError>
         + Send
         + 'static,
 {
     let id = task_id();
+    let documents_total = names.len();
     {
         let mut jobs = state.jobs.lock().unwrap();
         purge_expired(&mut jobs, state.cfg.result_ttl_secs);
@@ -1532,6 +1561,9 @@ where
             id.clone(),
             Job {
                 state: JobState::Pending,
+                names,
+                cancel: Arc::new(AtomicBool::new(false)),
+                created_at: Instant::now(),
                 done_at: None,
                 progress: Arc::new(Mutex::new(JobProgress {
                     documents_total,
@@ -1550,9 +1582,12 @@ where
         let Ok(permit) = st.permits.clone().acquire_owned().await else {
             return;
         };
-        let progress = if let Some(job) = st.jobs.lock().unwrap().get_mut(&job_id) {
+        let (progress, cancel) = if let Some(job) = st.jobs.lock().unwrap().get_mut(&job_id) {
+            if job.cancel.load(Ordering::Relaxed) {
+                return; // Cancelled while waiting for the conversion slot.
+            }
             job.state = JobState::Started;
-            Arc::clone(&job.progress)
+            (Arc::clone(&job.progress), Arc::clone(&job.cancel))
         } else {
             return; // evicted while queued (TTL abuse would need days)
         };
@@ -1561,7 +1596,7 @@ where
         let outcome = tokio::task::spawn_blocking(move || {
             // The job's progress slot (#783) for the conversions `work`
             // runs on this thread, cleared when the scope ends.
-            let scope = JobProgressScope::enter(progress);
+            let scope = JobProgressScope::enter(progress, cancel);
             let out = work(&stx, &rt);
             drop(scope);
             trim_heap();
@@ -1572,12 +1607,16 @@ where
         .and_then(|r| r);
         drop(permit);
         if let Some(job) = st.jobs.lock().unwrap().get_mut(&job_id) {
-            job.state = match outcome {
+            job.state = if job.cancel.load(Ordering::Relaxed) {
+                JobState::Cancelled
+            } else {
+                match outcome {
                 Ok(stored) => JobState::Success(stored),
                 Err(e) => {
                     let code = api_error_code(&e);
                     let (status, msg) = api_error_parts(e);
                     JobState::Failure(status, msg, code)
+                }
                 }
             };
             job.done_at = Some(std::time::Instant::now());
@@ -1634,7 +1673,7 @@ async fn job_result(
         )
             .into_response(),
         Some(job) => match &job.state {
-            JobState::Pending | JobState::Started => (
+            JobState::Pending | JobState::Started | JobState::Cancelling => (
                 StatusCode::ACCEPTED,
                 Json(json!({ "task_id": id, "task_status": job.state.as_str() })),
             )
@@ -1642,6 +1681,10 @@ async fn job_result(
             JobState::Failure(status, msg, code) => {
                 (*status, error_body(msg, *code)).into_response()
             }
+            JobState::Cancelled => (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "conversion was cancelled" })),
+            ).into_response(),
             // Clone rather than remove: the result stays re-fetchable until
             // the TTL evicts it (a client retrying a dropped response must not
             // find a 404). The survived problems too, so the result carries
@@ -1780,7 +1823,10 @@ fn run_conversion(
         let name = source.name.clone();
         let converted = convert_document(state, source, options)?;
         let mut stored = render_stored(state, to, image_mode, &name, &converted.document, options)?;
-        if matches!(to, "md" | "markdown") && converted.errors.is_empty() {
+        if matches!(to, "md" | "markdown")
+            && converted.errors.is_empty()
+            && !job_cancel_requested()
+        {
             nas_output::save_markdown(&name, &stored.body);
         }
         stored.redaction = converted.redaction_header();
@@ -3215,6 +3261,7 @@ fn convert_document_inner(
             let reporter = Arc::new(finish.reporter(1, &source.name, None));
             reporter.document_started();
             pipeline.set_progress(reporter.page_hook());
+            pipeline.set_cancel_flag(job_cancel_token());
             let converted = match source.format {
                 InputFormat::Pdf => pipeline
                     .convert_outcome(&source.bytes, o.password.as_deref(), &source.name)
@@ -3611,7 +3658,7 @@ fn stream_one(
                 };
                 // Persist only complete conversions; partial timeout results remain
                 // available to the client without being written as final files.
-                if converted.errors.is_empty() {
+                if converted.errors.is_empty() && !job_cancel_requested() {
                     nas_output::save_markdown(&name, md.as_bytes());
                 }
                 // The headers are one document's: none for a batch.
