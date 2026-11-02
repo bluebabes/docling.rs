@@ -7,6 +7,9 @@ on:
     paths:
       - crates/docling-serve/Dockerfile.nas
       - crates/docling-serve/src/lib.rs
+      - crates/docling-serve/src/index.html
+      - crates/docling-serve/src/compat.rs
+      - crates/docling-pdf/src/lib.rs
       - crates/docling-serve/src/nas_output.rs
       - .github/workflows/docling-nas-j4125.yml
 
@@ -15,7 +18,7 @@ permissions:
 
 concurrency:
   group: docling-nas-j4125
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -98,6 +101,8 @@ jobs:
             exit 1
           fi
           curl --noproxy '*' -fsS http://127.0.0.1:15001/health
+          curl --noproxy '*' -fsS http://127.0.0.1:15001/ | grep -q '当前任务'
+          curl --noproxy '*' -fsS http://127.0.0.1:15001/v1/jobs | grep -q '"jobs"'
           curl --noproxy '*' -fsS --max-time 420 \
             -F 'file=@tests/data/pdf/sources/base14_fonts.pdf' \
             http://127.0.0.1:15001/v1/convert -o "$response_file"
