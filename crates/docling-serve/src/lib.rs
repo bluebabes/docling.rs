@@ -247,6 +247,7 @@ use serde_json::json;
 use tokio::sync::Semaphore;
 
 mod compat;
+mod nas_output;
 pub mod o11y;
 mod passthrough;
 
@@ -1779,6 +1780,9 @@ fn run_conversion(
         let name = source.name.clone();
         let converted = convert_document(state, source, options)?;
         let mut stored = render_stored(state, to, image_mode, &name, &converted.document, options)?;
+        if matches!(to, "md" | "markdown") && converted.errors.is_empty() {
+            nas_output::save_markdown(&name, &stored.body);
+        }
         stored.redaction = converted.redaction_header();
         stored.pdf_repairs = converted.pdf_repairs_header();
         stored.errors = converted.errors;
@@ -3605,6 +3609,11 @@ fn stream_one(
                             .0
                     }
                 };
+                // Persist only complete conversions; partial timeout results remain
+                // available to the client without being written as final files.
+                if converted.errors.is_empty() {
+                    nas_output::save_markdown(&name, md.as_bytes());
+                }
                 // The headers are one document's: none for a batch.
                 let mut headers = Vec::new();
                 if !batch {
