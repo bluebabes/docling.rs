@@ -46,8 +46,10 @@ ENV DOCLING_RS_MODELS_DIR=/app/.models \
     ORT_DYLIB_PATH=/app/.models/onnxruntime/libonnxruntime.so \
     DOCLING_RS_EP=cpu \
     DOCLING_RS_SYSTEM_FONTS=0 \
-    DOCLING_RS_FONT_DIRS=/usr/share/fonts/truetype/liberation:/usr/share/fonts/truetype/dejavu:/usr/share/fonts/opentype/noto
-RUN test -s "$ORT_DYLIB_PATH" \
+    DOCLING_RS_FONT_DIRS=/usr/share/fonts/truetype/liberation:/usr/share/fonts/truetype/dejavu:/usr/share/fonts/opentype/noto \
+    DOCLING_RS_OUTPUT_DIR=/output
+RUN mkdir -p /output \
+    && test -s "$ORT_DYLIB_PATH" \
     && tesseract --list-langs 2>&1 | grep -q chi_sim
 EXPOSE 5001
 HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=3 \

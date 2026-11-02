@@ -6,6 +6,8 @@ on:
     branches: [master]
     paths:
       - crates/docling-serve/Dockerfile.nas
+      - crates/docling-serve/src/lib.rs
+      - crates/docling-serve/src/nas_output.rs
       - .github/workflows/docling-nas-j4125.yml
 
 permissions:
@@ -70,12 +72,15 @@ jobs:
             qemu-x86_64 -cpu Westmere -L / /usr/local/bin/docling-serve --help >/dev/null
           '
 
-      - name: Check HTTP readiness and model initialization
+      - name: Check HTTP readiness and persistent Markdown output
         shell: bash
         run: |
           set -euo pipefail
-          docker run -d --name docling-nas-smoke -p 127.0.0.1:15001:5001 "$IMAGE"
-          trap 'docker logs --tail 100 docling-nas-smoke || true; docker rm -f docling-nas-smoke >/dev/null 2>&1 || true' EXIT
+          output_dir="$(mktemp -d)"
+          response_file="$(mktemp)"
+          docker run -d --name docling-nas-smoke -p 127.0.0.1:15001:5001 \
+            --mount "type=bind,source=$output_dir,target=/output" "$IMAGE"
+          trap 'docker logs --tail 100 docling-nas-smoke || true; docker rm -f docling-nas-smoke >/dev/null 2>&1 || true; rm -rf "$output_dir" "$response_file"' EXIT
           ready=false
           for attempt in $(seq 1 90); do
             if curl --noproxy '*' -fsS http://127.0.0.1:15001/ready >/dev/null; then
@@ -93,6 +98,13 @@ jobs:
             exit 1
           fi
           curl --noproxy '*' -fsS http://127.0.0.1:15001/health
+          curl --noproxy '*' -fsS --max-time 420 \
+            -F 'file=@tests/data/pdf/sources/base14_fonts.pdf' \
+            http://127.0.0.1:15001/v1/convert -o "$response_file"
+          test -s "$response_file"
+          test -s "$output_dir/base14_fonts.md"
+          cmp "$response_file" "$output_dir/base14_fonts.md"
+          echo 'PDF conversion generated persistent Markdown in the NAS mount.'
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
