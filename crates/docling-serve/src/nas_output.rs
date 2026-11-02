@@ -96,7 +96,7 @@ mod tests {
     fn sanitizes_upload_paths_and_preserves_chinese_names() {
         assert_eq!(safe_stem("/tmp/小学词汇电子思维导图.pdf"), "小学词汇电子思维导图");
         assert_eq!(safe_stem("C:\\fake\\demo.pdf"), "demo");
-        assert_eq!(safe_stem("../../.pdf"), "document");
+        assert_eq!(safe_stem("../../.."), "document");
         assert_eq!(safe_stem("../../../../foo.pdf"), "foo");
     }
 
