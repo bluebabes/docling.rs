@@ -164,10 +164,10 @@
     <div class="gallery" id="gallery"></div>
   </div>
   <div class="row" style="margin-top:1rem;justify-content:space-between">
-    <strong>当前任务</strong>
+    <strong>当前浏览器的任务</strong>
     <button type="button" id="refresh-jobs" class="task-action">刷新列表</button>
   </div>
-  <div class="hint" id="jobs-empty">暂无任务。已完成任务默认保留约 10 分钟，输出文件在 NAS 中长期保存。</div>
+  <div class="hint" id="jobs-empty">暂无任务。任务记录仅保存在此浏览器中；服务器结果默认保留约 10 分钟，成功生成的 Markdown 保存在 NAS 输出目录。</div>
   <table aria-label="转换任务列表">
     <thead><tr><th>文件</th><th>状态</th><th>处理进度</th><th>操作</th></tr></thead>
     <tbody id="jobs-list"></tbody>
@@ -398,6 +398,22 @@ let activeTaskId = null;
 let polling = false;
 let renderedTaskId = null;
 const jobStatus = $('job-message');
+// Persist only opaque task IDs and display names in the submitting browser.
+// The backend deliberately provides no public list of other people's jobs.
+const storageKey = 'docling_async_jobs_v1';
+let fallbackJobs = [];
+function savedJobs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(storageKey) || '[]');
+    return Array.isArray(parsed) ? parsed.filter((task) =>
+      /^[a-f0-9]{32}$/i.test(task.task_id) && Array.isArray(task.names)) : [];
+  } catch { return fallbackJobs; }
+}
+function saveJobs(jobs) {
+  fallbackJobs = jobs;
+  try { localStorage.setItem(storageKey, JSON.stringify(jobs)); }
+  catch { jobStatus.textContent = '浏览器限制本地存储；刷新页面后任务列表可能丢失。'; }
+}
 
 async function fetchResult(id) {
   const res = await fetch('/v1/result/' + encodeURIComponent(id), { cache: 'no-store' });
@@ -561,10 +577,17 @@ async function refreshJobs() {
   if (polling) return;
   polling = true;
   try {
-    const res = await fetch('/v1/jobs', { cache: 'no-store' });
-    if (!res.ok) throw Error('HTTP ' + res.status);
-    const payload = await res.json();
-    const jobs = payload.jobs || [];
+    const stored = savedJobs();
+    const statuses = await Promise.all(stored.map(async (task) => {
+      const res = await fetch('/v1/status/' + encodeURIComponent(task.task_id), { cache: 'no-store' });
+      if (res.status === 404) return null; // Evicted after TTL, or server restarted.
+      if (!res.ok) throw Error('HTTP ' + res.status);
+      return { ...task, ...await res.json() };
+    }));
+    const jobs = statuses.filter(Boolean);
+    if (jobs.length !== stored.length) saveJobs(
+      jobs.map(({ task_id, names, format }) => ({ task_id, names, format }))
+    );
     const tbody = $('jobs-list');
     tbody.replaceChildren();
     $('jobs-empty').style.display = jobs.length ? 'none' : '';
@@ -649,16 +672,19 @@ $('go').addEventListener('click', async () => {
     if (value) opts[id] = value;
   }
   let request;
+  let names;
   if (document.querySelector('input[name=mode]:checked').value === 'file') {
     const files = $('file').files;
     if (!files.length) { out.textContent = '请先选择文件。'; return; }
     const form = new FormData();
+    names = Array.from(files, (file) => file.name);
     for (const file of files) form.append('file', file);
     for (const [key, value] of Object.entries(opts)) form.append(key, String(value));
     request = { method: 'POST', body: form };
   } else {
     const url = $('url').value.trim();
     if (!url) { out.textContent = '请先填写文件 URL。'; return; }
+    names = [url.split('/').pop() || '在线文件'];
     request = {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ url, ...opts }),
@@ -672,6 +698,7 @@ $('go').addEventListener('click', async () => {
     const task = await response.json();
     if (!task.task_id) throw Error('服务器未返回任务 ID');
     activeTaskId = task.task_id;
+    saveJobs([{ task_id: task.task_id, names, format: to }, ...savedJobs()].slice(0, 25));
     renderedTaskId = null;
     jobStatus.textContent = '任务已提交，可以关闭网页；下次打开仍可在任务列表查看。';
     await refreshJobs();
