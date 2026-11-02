@@ -1,0 +1,54 @@
+name: Cancel obsolete runs (one-time)
+on:
+  push:
+    branches: [master]
+    paths:
+      - .github/workflows/cancel-obsolete-runs-once.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel-old-runs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cancel earlier CI and PDF conformance runs, preserve latest NAS build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN: ${{ github.run_id }}
+          KEEP_NAS_RUN: "41463791129"
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          base = "https://api.github.com/repos/" + os.environ["REPO"]
+          headers = {
+              "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "docling-nas-one-time-cancel",
+          }
+          req = urllib.request.Request(base + "/actions/runs?per_page=100", headers=headers)
+          with urllib.request.urlopen(req) as response:
+              runs = json.load(response)["workflow_runs"]
+          for run in runs:
+              rid = run["id"]
+              if (rid >= int(os.environ["CURRENT_RUN"])
+                  or rid == int(os.environ["KEEP_NAS_RUN"])
+                  or run["status"] == "completed"
+                  or run["name"] not in ("CI", "PDF conformance", "Docling J4125 NAS image")):
+                  continue
+              url = base + "/actions/runs/" + str(rid) + "/cancel"
+              req = urllib.request.Request(url, data=b"", headers=headers, method="POST")
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      print("Requested cancellation:", rid, run["name"], response.status)
+              except urllib.error.HTTPError as exc:
+                  if exc.code in (404, 409, 422):
+                      print("No longer cancellable:", rid, exc.code)
+                  else:
+                      raise
+          PY
