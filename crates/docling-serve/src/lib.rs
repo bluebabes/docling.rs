@@ -1306,6 +1306,7 @@ struct Job {
     state: JobState,
     /// Source names for the job management page.
     names: Vec<String>,
+    format: Option<String>,
     /// Signal the conversion worker to stop at the next PDF page boundary.
     cancel: Arc<AtomicBool>,
     /// When the job entered the queue.
@@ -1520,7 +1521,7 @@ async fn convert_async(
             Err((name, _)) => name.clone(),
         })
         .collect();
-    let id = submit_job(&state, names, move |st, rt| {
+    let id = submit_job(&state, names, Some(to.clone()), move |st, rt| {
         run_conversion(st, sources, &options, &to, image_mode, target.as_ref(), rt)
     })?;
 
@@ -1537,7 +1538,7 @@ async fn convert_async(
 /// for `/v1/result/{id}` until the TTL evicts it. Refused with 429 when the
 /// job map is full. Shared by `/v1/convert/async` and the upstream-shaped
 /// async routes (#615).
-fn submit_job<F>(state: &Arc<AppState>, names: Vec<String>, work: F) -> Result<String, ApiError>
+fn submit_job<F>(state: &Arc<AppState>, names: Vec<String>, format: Option<String>, work: F) -> Result<String, ApiError>
 where
     F: FnOnce(&AppState, &tokio::runtime::Handle) -> Result<StoredResponse, ApiError>
         + Send
@@ -1562,6 +1563,7 @@ where
             Job {
                 state: JobState::Pending,
                 names,
+                format,
                 cancel: Arc::new(AtomicBool::new(false)),
                 created_at: Instant::now(),
                 done_at: None,
@@ -1670,7 +1672,8 @@ async fn list_jobs(State(state): State<Arc<AppState>>) -> Response {
                 json!({
                     "task_id": id,
                     "task_status": job.state.as_str(),
-                    "names": job.names,
+                    "names": &job.names,
+                    "format": &job.format,
                     "progress": &*progress,
                     "error": match &job.state {
                         JobState::Failure(_, msg, _) => Some(msg.as_str()),
