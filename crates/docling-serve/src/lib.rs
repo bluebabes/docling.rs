@@ -1656,6 +1656,73 @@ async fn job_status(
     }
 }
 
+/// List server-side asynchronous jobs, including those submitted by other
+/// browser tabs. Finished entries follow the regular result TTL.
+async fn list_jobs(State(state): State<Arc<AppState>>) -> Response {
+    let mut jobs = state.jobs.lock().unwrap();
+    purge_expired(&mut jobs, state.cfg.result_ttl_secs);
+    let mut entries: Vec<_> = jobs
+        .iter()
+        .map(|(id, job)| {
+            let progress = job.progress.lock().unwrap_or_else(|p| p.into_inner());
+            (
+                job.created_at,
+                json!({
+                    "task_id": id,
+                    "task_status": job.state.as_str(),
+                    "names": job.names,
+                    "progress": &*progress,
+                    "error": match &job.state {
+                        JobState::Failure(_, msg, _) => Some(msg.as_str()),
+                        _ => None,
+                    },
+                }),
+            )
+        })
+        .collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    Json(json!({ "jobs": entries.into_iter().map(|(_, value)| value).collect::<Vec<_>>() }))
+        .into_response()
+}
+
+/// Request a cooperative stop. A queued job is removed from the queue
+/// immediately; a running PDF finishes its current page before exiting.
+/// Worker outcome is discarded when cancellation was requested.
+async fn cancel_job(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    let mut jobs = state.jobs.lock().unwrap();
+    purge_expired(&mut jobs, state.cfg.result_ttl_secs);
+    match jobs.get_mut(&id) {
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "unknown or expired task id"})),
+        ).into_response(),
+        Some(job) => {
+            match job.state {
+                JobState::Pending => {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    job.state = JobState::Cancelled;
+                    job.done_at = Some(Instant::now());
+                }
+                JobState::Started => {
+                    job.cancel.store(true, Ordering::Relaxed);
+                    job.state = JobState::Cancelling;
+                }
+                JobState::Cancelling | JobState::Cancelled => {}
+                JobState::Success(_) | JobState::Failure(..) => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(json!({"error": "task has already finished"})),
+                    ).into_response();
+                }
+            }
+            Json(json!({ "task_id": id, "task_status": job.state.as_str() })).into_response()
+        }
+    }
+}
+
 /// `GET /v1/result/{id}` (#182): the conversion output with the same content
 /// type / headers the sync endpoint would have used. Not ready yet → 202 with
 /// the status body; failed → the sync endpoint's error status; unknown or
