@@ -69,7 +69,9 @@ fn write_markdown(dir: &Path, source_name: &str, markdown: &[u8]) -> io::Result<
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
         #[cfg(unix)]
-        options.mode(0o600);
+        // The NAS host user must be able to read files written by container
+        // root, even when the host directory has a different owner.
+        options.mode(0o644);
         match options.open(&path) {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(markdown).and_then(|()| file.sync_all()) {
