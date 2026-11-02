@@ -81,9 +81,10 @@ jobs:
           set -euo pipefail
           output_dir="$(mktemp -d)"
           response_file="$(mktemp)"
+          ui_file="$(mktemp)"
           docker run -d --name docling-nas-smoke -p 127.0.0.1:15001:5001 \
             --mount "type=bind,source=$output_dir,target=/output" "$IMAGE"
-          trap 'docker logs --tail 100 docling-nas-smoke || true; docker rm -f docling-nas-smoke >/dev/null 2>&1 || true; rm -rf "$output_dir" "$response_file"' EXIT
+          trap 'docker logs --tail 100 docling-nas-smoke || true; docker rm -f docling-nas-smoke >/dev/null 2>&1 || true; rm -rf "$output_dir" "$response_file" "$ui_file"' EXIT
           ready=false
           for attempt in $(seq 1 90); do
             if curl --noproxy '*' -fsS http://127.0.0.1:15001/ready >/dev/null; then
@@ -101,7 +102,11 @@ jobs:
             exit 1
           fi
           curl --noproxy '*' -fsS http://127.0.0.1:15001/health
-          curl --noproxy '*' -fsS http://127.0.0.1:15001/ | grep -q '当前任务'
+          # Verify stable HTML element IDs rather than translated labels.
+          # Save the response first: grep -q on a pipe may SIGPIPE curl under pipefail.
+          curl --noproxy '*' -fsS http://127.0.0.1:15001/ -o "$ui_file"
+          grep -Fq 'id="jobs-list"' "$ui_file"
+          grep -Fq '/v1/convert/async' "$ui_file"
           test "$(curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' \
             -X POST http://127.0.0.1:15001/v1/jobs/unknown-task/cancel)" = "404"
           curl --noproxy '*' -fsS --max-time 420 \
